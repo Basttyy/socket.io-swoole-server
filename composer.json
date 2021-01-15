@@ -1,7 +1,7 @@
 {
-  "name": "shuixn/socket.io-swoole-server",
-  "description": ":rainbow: Socket.io Server implementation for Swoole",
-  "keywords": ["socket.io", "swoole", "websocket"],
+  "name": "basttyy/swoolesocketioserver",
+  "description": ":simple: Socket.io Server implementation for Swoole",
+  "keywords": ["php", "websocket", "server", "socket.io", "swoole"],
   "require": {
     "php": ">=7.1",
     "ext-swoole": ">=4.0.3",
@@ -9,8 +9,8 @@
   },
   "authors": [
     {
-      "name": "shuixn",
-      "email": "cyanming2016@gmail.com"
+      "name": "Abdulbasit Mamman",
+      "email": "basttyydev@gmail.com"
     }
   ],
   "autoload": {
