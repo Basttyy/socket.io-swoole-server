@@ -43,6 +43,9 @@ class Server
     /** @var string */
     private $message;
 
+    /** @var string */
+    private $isBroadcast;
+
     /** @var int */
     private $port;
 
@@ -56,6 +59,8 @@ class Server
         $this->configPayload = $configPayload;
 
         $this->callback = $callback;
+
+        $this->isBroadcast = false;
     }
 
     /**
@@ -179,7 +184,7 @@ class Server
      * @param string $eventName
      * @param array $data
      */
-    public function emit(string $eventName, array $data)
+    public function emit(string $eventName, array $data) : void
     {
         $packetPayload = new PacketPayload();
         $packetPayload
@@ -189,24 +194,10 @@ class Server
             ->setPacketType(PacketTypeEnum::EVENT)
             ->setMessage(json_encode($data));
 
-        $this->webSocketServer->push($this->fd, Packet::encode($packetPayload));
-    }
-
-    /**
-     * @param string $eventName
-     * @param string $data
-     *
-     * @throws \Exception
-     */
-    public function broadcast(string $eventName, string $data)
-    {
-        $packetPayload = new PacketPayload();
-        $packetPayload
-            ->setNamespace($this->namespace)
-            ->setEvent($eventName)
-            ->setType(TypeEnum::MESSAGE)
-            ->setPacketType(PacketTypeEnum::EVENT)
-            ->setMessage(json_encode($data));
+        if (!$this->isBroadcast) {
+            $this->webSocketServer->push($this->fd, Packet::encode($packetPayload));
+            return ;
+        }
 
         $sids = NamespaceSessionTable::getInstance()->get($this->namespace);
 
@@ -227,6 +218,17 @@ class Server
         } else {
             echo "broadcast failed, this namespace has not sid\n";
         }
+        $this->isBroadcast = false;
+    }
+
+    /**
+     * @throws \Exception
+     */
+    public function broadcast() : self
+    {
+        $this->isBroadcast = true;
+
+        return $this;
     }
 
     public function start()
