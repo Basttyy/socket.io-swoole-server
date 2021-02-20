@@ -184,7 +184,7 @@ class Server
      * @param string $eventName
      * @param array $data
      */
-    public function emit(string $eventName, array $data)
+    public function emit(string $eventName, array $data) : void
     {
         $packetPayload = new PacketPayload();
         $packetPayload
@@ -194,7 +194,10 @@ class Server
             ->setPacketType(PacketTypeEnum::EVENT)
             ->setMessage(json_encode($data));
 
-        $this->webSocketServer->push($this->fd, Packet::encode($packetPayload));
+        if (!$this->isBroadcast) {
+            $this->webSocketServer->push($this->fd, Packet::encode($packetPayload));
+            return ;
+        }
 
         $sids = NamespaceSessionTable::getInstance()->get($this->namespace);
 
@@ -215,17 +218,17 @@ class Server
         } else {
             echo "broadcast failed, this namespace has not sid\n";
         }
+        $this->isBroadcast = false;
     }
 
     /**
-     *
      * @throws \Exception
      */
     public function broadcast() : self
     {
         $this->isBroadcast = true;
 
-        return $this;   
+        return $this;
     }
 
     public function start()
