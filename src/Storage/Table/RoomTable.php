@@ -59,7 +59,7 @@ class RoomTable extends BaseTable
      *
      * @throws \Exception
      */
-    public function push(string $room, string $fd) : bool
+    public function push(string $room, int $fd) : bool
     {
         if ($this->table->exist($room)) {
             $value = $this->table->get($room, $this->tableKey);
@@ -96,7 +96,7 @@ class RoomTable extends BaseTable
      * @return bool
      * @throws \Exception
      */
-    public function pop(string $room, string $fd) : bool
+    public function pop(string $room, int $fd) : bool
     {
         if ($this->table->exist($room)) {
             $value = $this->table->get($room, $this->tableKey);
@@ -105,7 +105,7 @@ class RoomTable extends BaseTable
                 if (\is_null($value)) {
                     throw new Exception('json decode failed: ' . \json_last_error_msg());
                 }
-                if (\in_array($fd, $value)) {
+                if (!\in_array($fd, $value)) {
                     return true;
                 } else {
                     $value = \array_diff($value, [$fd]);
@@ -143,6 +143,27 @@ class RoomTable extends BaseTable
     {
         $value = $this->table->get($room, $this->tableKey);
         if ($value !== false) {
+            return $value;
+        } else {
+            throw new \Exception('get table key return false');
+        }
+    }
+
+        /**
+     * @param string $room
+     *
+     * @return array
+     *
+     * @throws \Exception
+     */
+    public function getFds(string $room) : array
+    {
+        $value = $this->table->get($room, $this->tableKey);
+        if ($value) {
+            $value = \json_decode($value, true);
+            if (is_null($value)) {
+                throw new \Exception('json decode failed: ' . json_last_error_msg());
+            }
             return $value;
         } else {
             throw new \Exception('get table key return false');

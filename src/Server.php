@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace SocketIO;
 
+use Exception;
 use Swoole\Coroutine\Channel;
 use SocketIO\Engine\Payload\ChannelPayload;
 use SocketIO\Engine\Payload\ConfigPayload;
@@ -20,6 +21,7 @@ use SocketIO\Storage\Table\NamespaceSessionTable;
 use SocketIO\Storage\Table\SessionListenerTable;
 use Swoole\WebSocket\Server as WebSocketServer;
 use SocketIO\ExceptionHandler\InvalidEventException;
+use SocketIO\Storage\Table\RoomTable;
 
 /**
  * Class Server
@@ -37,14 +39,17 @@ class Server
     /** @var WebSocketServer */
     private $webSocketServer;
 
-    /** @var int */
-    private $fd;
+    /** socket sender's fd @var int */
+    private $sender;
 
     /** @var string */
     private $message;
 
     /** @var string */
     private $isBroadcast;
+
+    /** @var array */
+    private $to;
 
     /** @var int */
     private $port;
@@ -61,6 +66,8 @@ class Server
         $this->callback = $callback;
 
         $this->isBroadcast = false;
+
+        $this->to = [];
     }
 
     /**
@@ -84,20 +91,23 @@ class Server
     }
 
     /**
+     * Get current sender fd.
      * @return int
      */
-    public function getFd(): int
+    public function getSender(): int
     {
-        return $this->fd;
+        return $this->sender;
     }
 
     /**
+     * Set sender fd.
+     * 
      * @param int $fd
      * @return Server
      */
-    public function setFd(int $fd): Server
+    public function setSender(int $fd): Server
     {
-        $this->fd = $fd;
+        $this->sender = $fd;
         return $this;
     }
 
@@ -129,6 +139,16 @@ class Server
     }
 
     /**
+     * @throws \Exception
+     */
+    public function broadcast() : self
+    {
+        $this->isBroadcast = true;
+
+        return $this;
+    }
+
+    /**
      * @param string $eventName
      * @param callable $callback
      *
@@ -147,6 +167,161 @@ class Server
         return $this;
     }
 
+    /**
+     * @param string|array $values
+     * 
+     * @return bool
+     * 
+     * @throws Exception
+     */
+    public function to(string|int|array $values): self
+    {
+        $values = \is_integer($values) || \is_string($values) ? \func_get_args() : $values;
+
+        foreach ($values as $value) {
+            if (! \in_array($value, $this->to)) {
+                $this->to[] = $value;
+            }
+        }
+
+        return $this;
+    }
+
+    /**
+     * @param string|array $rooms
+     * 
+     * @return bool
+     * 
+     * @throws Exception
+     */
+    public function join(string|array $rooms) : bool
+    {
+        if (\gettype($rooms) === "string") {
+            return RoomTable::getInstance()->push($rooms, $this->sender);
+        } else {
+            foreach ($rooms as $room) {
+                return RoomTable::getInstance()->push($room, $this->sender);
+            }
+        }
+    }
+
+    /**
+     * @param string|array $rooms
+     * 
+     * @return bool
+     * 
+     * @throws Exception
+     */
+    public function leave(string|array $rooms) : bool
+    {
+        if (\gettype($rooms) === "string") {
+            return RoomTable::getInstance()->pop($rooms, $this->sender);
+        } else {
+            foreach ($rooms as $room) {
+                return RoomTable::getInstance()->pop($room, $this->sender);
+            }
+        }
+    }
+
+    /**
+     * @param string $eventName
+     * @param array $data
+     */
+    public function emit(string $eventName, array $data) : void
+    {
+        $packetPayload = new PacketPayload();
+        $packetPayload
+            ->setNamespace($this->namespace)
+            ->setEvent($eventName)
+            ->setType(TypeEnum::MESSAGE)
+            ->setPacketType(PacketTypeEnum::EVENT)
+            ->setMessage(json_encode($data));
+
+        if (!$this->isBroadcast && empty($this->to)) {
+            $this->webSocketServer->push($this->sender, Packet::encode($packetPayload));
+            return ;
+        }
+
+        $this->isBroadcast = false;
+    }
+
+    /**
+     * Reset some data status
+     * 
+     * @param bool $force
+     * 
+     * @return $this
+     */
+    public function reset(bool $force = false): self
+    {
+        $this->isBroadcast = false;
+        $this->to = [];
+
+        if ($force) {
+            $this->sender = null;
+            //$this->userId = null;
+        }
+        return $this;
+    }
+
+    public function start()
+    {
+        $this->initTables();
+
+        new EngineServer($this->port, $this->configPayload, $this->callback, $this);
+    }
+
+    /**
+     * Get all fds we're going to push data to
+     */
+    protected function getFds(): array
+    {
+        $fds = [];
+        if (!empty($this->to)) {
+            $fds = \array_filter($this->to, function($value) {
+                return \is_integer($value);
+            });
+            $rooms = \array_diff($this->to, $fds);
+
+            if ($this->isBroadcast) {
+                $fds[] = $this->sender;
+            }
+    
+            foreach ($rooms as $room) {
+                $clients = RoomTable::getInstance()->getFds($room);
+                //fallback fd with wrong type back to fds array
+                if (empty($clients) && \is_numeric($room)) {
+                    $fds[] = $room;
+                } else {
+                    $fds[] = \array_merge($fds, $clients);
+                }
+            }
+            
+            return \array_values(\array_unique($fds));
+        }
+
+        $sids = NamespaceSessionTable::getInstance()->get($this->namespace);
+
+        if (!empty($sids)) {
+            $sidMapFd = SessionListenerTable::getInstance()->transformSessionToListener($sids);
+            if (!empty($sidMapFd)) {
+                foreach ($sidMapFd as $sid => $fd) {
+                    if (isset($sidMapFd[$sid])) {
+                        $fds[] = $fd;
+                    } else {
+                        // remove sid from NamespaceSessionTable
+                        NamespaceSessionTable::getInstance()->pop($this->namespace, $sid);
+                    }
+                }
+            } else {
+                echo "broadcast failed, transform Sid to fd return empty\n";
+            }
+        } else {
+            echo "broadcast failed, this namespace has not sid\n";
+        }
+        return \array_values($fds);
+    }
+    
     private function consumeEvent(string $eventName, callable $callback)
     {
         if (!EventPool::getInstance()->isExist($this->namespace, $eventName)) {
@@ -180,69 +355,12 @@ class Server
         return;
     }
 
-    /**
-     * @param string $eventName
-     * @param array $data
-     */
-    public function emit(string $eventName, array $data) : void
-    {
-        $packetPayload = new PacketPayload();
-        $packetPayload
-            ->setNamespace($this->namespace)
-            ->setEvent($eventName)
-            ->setType(TypeEnum::MESSAGE)
-            ->setPacketType(PacketTypeEnum::EVENT)
-            ->setMessage(json_encode($data));
-
-        if (!$this->isBroadcast) {
-            $this->webSocketServer->push($this->fd, Packet::encode($packetPayload));
-            return ;
-        }
-
-        $sids = NamespaceSessionTable::getInstance()->get($this->namespace);
-
-        if (!empty($sids)) {
-            $sidMapFd = SessionListenerTable::getInstance()->transformSessionToListener($sids);
-            if (!empty($sidMapFd)) {
-                foreach ($sidMapFd as $sid => $fd) {
-                    if (isset($sidMapFd[$sid])) {
-                        $this->webSocketServer->push($fd, Packet::encode($packetPayload));
-                    } else {
-                        // remove sid from NamespaceSessionTable
-                        NamespaceSessionTable::getInstance()->pop($this->namespace, $sid);
-                    }
-                }
-            } else {
-                echo "broadcast failed, transform Sid to fd return empty\n";
-            }
-        } else {
-            echo "broadcast failed, this namespace has not sid\n";
-        }
-        $this->isBroadcast = false;
-    }
-
-    /**
-     * @throws \Exception
-     */
-    public function broadcast() : self
-    {
-        $this->isBroadcast = true;
-
-        return $this;
-    }
-
-    public function start()
-    {
-        $this->initTables();
-
-        new EngineServer($this->port, $this->configPayload, $this->callback, $this);
-    }
-
     private function initTables()
     {
         NamespaceSessionTable::getInstance();
         ListenerSessionTable::getInstance();
         SessionListenerTable::getInstance();
         ListenerTable::getInstance();
+        RoomTable::getInstance();
     }
 }
